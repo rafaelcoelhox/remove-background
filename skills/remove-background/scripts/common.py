@@ -30,6 +30,11 @@ def load_rgb(path: str) -> np.ndarray:
     return np.asarray(Image.open(path).convert('RGB')).astype(np.float32)
 
 
+def luma(rgb: np.ndarray) -> np.ndarray:
+    """Return the Rec. 601 luma of an RGB array as an ``(H, W)`` float array."""
+    return 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
+
+
 def border_pixels(rgb: np.ndarray, k: int = BORDER_K) -> np.ndarray:
     """Collect the pixels from all four edges of an image.
 
@@ -80,6 +85,43 @@ def decide_method(rgb: np.ndarray) -> str:
     """
     _, std, near = border_stats(rgb)
     return 'solid' if (std < 18 and near > 0.15) else 'photo'
+
+
+# ---------- probe analysis (cross-check pixels against the visual read) ----------
+def luminance_profile(rgb: np.ndarray, bands: int = 18
+                      ) -> list[tuple[int, int, float, float, float]]:
+    """Summarize the vertical luma distribution in horizontal bands.
+
+    Gives a caller that can SEE the image the numbers to reconcile against the
+    visual read: where sky, silhouette and ground actually sit in the pixels. A
+    blind threshold misreads this — a tall dark subject raises ``pct_dark`` high
+    up the frame, but the band *mean* only collapses at the true horizon; only a
+    viewer who knows it is a tree (not the ground) can tell the two apart.
+
+    Args:
+        rgb: RGB image array of shape ``(H, W, 3)``.
+        bands: Number of horizontal bands to split the height into.
+
+    Returns:
+        One ``(y0, y1, mean_luma, pct_dark, pct_bright)`` tuple per band, top to
+        bottom. ``pct_dark`` counts luma < 60, ``pct_bright`` counts luma > 110.
+    """
+    H = rgb.shape[0]
+    lum = luma(rgb)
+    rows = []
+    for i in range(bands):
+        y0, y1 = i * H // bands, (i + 1) * H // bands
+        seg = lum[y0:y1]
+        rows.append((y0, y1, float(seg.mean()),
+                     float((seg < 60).mean()), float((seg > 110).mean())))
+    return rows
+
+
+def brightest_point(rgb: np.ndarray) -> tuple[int, int, float]:
+    """Return ``(x, y, luma)`` of the brightest pixel (e.g. a sun or a specular)."""
+    lum = luma(rgb)
+    y, x = divmod(int(lum.argmax()), rgb.shape[1])
+    return x, y, float(lum[y, x])
 
 
 # ---------- alpha cleanup ----------

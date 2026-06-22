@@ -2,13 +2,19 @@
 """Single background-removal entry point.
 
 Chooses the method, cuts out, cleans, validates, and — for photos — switches
-models automatically when the result looks poor. Output is intentionally minimal
-so the internal method/model is not exposed to the end user.
+models automatically when the result looks poor. This is the quick path for easy
+images; an empty mask (``OBJETO_QUASE_VAZIO``) is reported, not patched over, so
+the agent can take over with the guided loop (probe -> calibrate -> review).
+Output is intentionally minimal so the internal method/model is not exposed to
+the end user.
 
 Usage:
     python3 run.py INPUT [OUTPUT]
                    [--method auto|solid|photo] [--model NAME]
                    [--keep-largest] [--no-fallback]
+
+The back-lit ``scene`` method is not routed here: it needs geometry the agent
+reads off the image, so it is driven directly via ``remove_bg_scene.py``.
 
 Prints three lines to stdout::
 

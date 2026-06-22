@@ -29,22 +29,26 @@ Remove the background from logo.png
 
 | Step | What happens |
 | --- | --- |
-| **Detect** | Picks edge flood-fill (solid/uniform backgrounds) or AI segmentation (natural photos). |
-| **Cut out** | Isolates the subject on the original pixels — keeps resolution, colors, and fine detail. |
-| **Validate** | Writes the transparent PNG and opens a checkerboard preview to confirm the result. |
+| **Look + probe** | Reads the image and measures the pixels (edge background, luminance profile, brightest point) to choose the right method. |
+| **Cut + calibrate** | Edge flood-fill, AI segmentation, or a luma scene cut — tuned to the image, on the original pixels (keeps resolution, colors, detail). |
+| **Review** | Writes the transparent PNG and checks a checkerboard preview, refining until the cutout is clean. |
 
 > A watermark baked into the pixels (e.g. Vecteezy) can't be removed — that needs inpainting, which is out of scope.
 
 ## Advanced
 
-Run the scripts yourself, or force a method/model from the command line:
+The scripts are a small toolkit you can drive directly:
 
 ```bash
 cd skills/remove-background/scripts
-python3 run.py image.png          # add --method, --model, --keep-largest, --no-fallback
+python3 analyze.py image.png       # probe: luminance profile, brightest point, recommended method
+python3 run.py image.png           # one-shot shortcut (auto-picks solid/photo)
+# …or a method directly, with calibration knobs:
+python3 remove_bg_photo.py image.png out.png --fg-threshold 250 --erode 4
+python3 remove_bg_scene.py image.png out.png --horizon 345 --sun 262,320
 ```
 
-See [`SKILL.md`](skills/remove-background/SKILL.md) for every option, model, and quality flag.
+See [`SKILL.md`](skills/remove-background/SKILL.md) for the full loop, every method, knob, and quality flag.
 
 ## Contributing & security
 

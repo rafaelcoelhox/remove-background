@@ -2,8 +2,8 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "remove-background",
   "displayName": "Remove Background",
-  "version": "1.0.0",
-  "description": "Remove the background from any image (photo, illustration, render, icon, product, person, animal, object), leaving it transparent in an RGBA PNG. Works on the original pixels — no generation or inpainting. Auto-selects edge flood fill or AI segmentation.",
+  "version": "1.1.0",
+  "description": "Remove the background from any image (photo, illustration, render, icon, product, person, animal, object), leaving it transparent in an RGBA PNG. Works on the original pixels — no generation or inpainting. Auto-selects edge flood fill, AI segmentation, or a luma-based cut for back-lit scenes.",
   "author": {
     "name": "Rafael Coelho",
     "url": "https://github.com/rafaelcoelhox"
@@ -20,6 +20,7 @@
     "rembg",
     "cutout",
     "alpha",
-    "segmentation"
+    "segmentation",
+    "silhouette"
   ]
 }

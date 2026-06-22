@@ -7,12 +7,16 @@ preserved. Alpha is generated with 1–2 px of antialiasing on the fringe, and t
 fringe color is decontaminated so no halo remains.
 
 Usage:
-    python3 remove_bg_solid.py INPUT [OUTPUT]
+    python3 remove_bg_solid.py INPUT [OUTPUT] [--hi D] [--lo D] [--bg-color R,G,B]
+
+Thresholds default to an Otsu split of the edge-distance histogram; override
+``--hi``/``--lo`` (or key a specific ``--bg-color``) when the auto split clips
+the object or leaves background — the agent calibrates these against the preview.
 """
 from __future__ import annotations
 
+import argparse
 import os
-import sys
 
 import numpy as np
 from PIL import Image
@@ -53,25 +57,36 @@ def otsu(values: np.ndarray, nbins: int = 256) -> float:
 
 def main() -> None:
     """Cut out a solid background from the image path(s) on the command line."""
-    if len(sys.argv) < 2:
-        sys.exit('usage: python3 remove_bg_solid.py INPUT [OUTPUT]')
-    src = sys.argv[1]
-    dst = sys.argv[2] if len(sys.argv) > 2 else os.path.splitext(src)[0] + '-sem-fundo.png'
+    ap = argparse.ArgumentParser()
+    ap.add_argument('src', help='input image path')
+    ap.add_argument('dst', nargs='?', help='output PNG path (default: <input>-sem-fundo.png)')
+    ap.add_argument('--hi', type=float,
+                    help='color distance above which a pixel is solid object (override Otsu)')
+    ap.add_argument('--lo', type=float,
+                    help='color distance below which a pixel is pure background (override Otsu)')
+    ap.add_argument('--bg-color', dest='bg_color',
+                    help="background color 'R,G,B' to key out (default: sampled from edges)")
+    a = ap.parse_args()
+    src = a.src
+    dst = a.dst or os.path.splitext(src)[0] + '-sem-fundo.png'
 
     im = Image.open(src)
     print('original mode:', im.mode, '| has real alpha?', 'A' in im.getbands())
     rgb = np.asarray(im.convert('RGB')).astype(np.float32)
     H, W, _ = rgb.shape
 
-    # background color sampled at the edges (shared helper)
-    bg_color = np.median(common.border_pixels(rgb), axis=0)
-    print('sampled background color:', bg_color.round(1))
+    # background color: keyed by the caller, or sampled at the edges (shared helper)
+    if a.bg_color:
+        bg_color = np.array([float(v) for v in a.bg_color.split(',')], dtype=np.float32)
+    else:
+        bg_color = np.median(common.border_pixels(rgb), axis=0)
+    print('background color:', bg_color.round(1), '(given)' if a.bg_color else '(sampled)')
 
-    # color distance from background + adaptive thresholds (Otsu)
+    # color distance from background + thresholds (Otsu default, caller may override)
     dist = np.sqrt(((rgb - bg_color) ** 2).sum(2))
     T = otsu(dist[dist < np.percentile(dist, 99)])  # ignore extreme outliers
-    HI = max(T, 12.0)            # above this = solid object
-    LO = max(T * 0.35, 8.0)      # below this = pure background
+    HI = a.hi if a.hi is not None else max(T, 12.0)        # above this = solid object
+    LO = a.lo if a.lo is not None else max(T * 0.35, 8.0)  # below this = pure background
     print('thresholds: LO=%.1f HI=%.1f (Otsu=%.1f)' % (LO, HI, T))
 
     # background connected to the edges (a solid object blocks the flood fill)
