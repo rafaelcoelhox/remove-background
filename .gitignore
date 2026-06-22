@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Generated cutouts / previews
+*-sem-fundo.png
+bg_preview_*.png
+validate_*.png
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/

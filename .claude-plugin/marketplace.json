@@ -1,0 +1,23 @@
+{
+  "name": "rafaelcoelhox",
+  "description": "Image tools for Claude Code — remove the background from any image into a transparent PNG.",
+  "owner": {
+    "name": "Rafael Coelho"
+  },
+  "plugins": [
+    {
+      "name": "remove-background",
+      "source": "./",
+      "description": "Remove the background from any image, leaving it transparent in an RGBA PNG. Works on the original pixels (no generation/inpainting); auto-selects edge flood fill or AI segmentation.",
+      "category": "productivity",
+      "keywords": [
+        "image",
+        "background-removal",
+        "transparent",
+        "png",
+        "rembg",
+        "cutout"
+      ]
+    }
+  ]
+}
