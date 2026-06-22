@@ -25,10 +25,16 @@ import common
 
 def main() -> None:
     """Probe the image path given on the command line."""
-    if len(sys.argv) < 2:
-        sys.exit('usage: python3 analyze.py INPUT')
+    args = sys.argv[1:]
+    top_frac = 0.35
+    if '--top' in args:                       # aim the sky band the viewer sees
+        i = args.index('--top')
+        top_frac = float(args[i + 1])
+        del args[i:i + 2]
+    if not args:
+        sys.exit('usage: python3 analyze.py INPUT [--top FRAC]')
 
-    im = Image.open(sys.argv[1])
+    im = Image.open(args[0])
     W, H = im.size
     real_alpha = 'A' in im.getbands() and bool(np.asarray(im)[:, :, 3].min() < 250)
 
@@ -53,6 +59,19 @@ def main() -> None:
     print('region RGB  TL:%s TR:%s mid:%s BL:%s BR:%s'
           % (sample(0, .2, 0, .2), sample(.8, 1, 0, .2), sample(.4, .6, .4, .6),
              sample(0, .2, .8, 1), sample(.8, 1, .8, 1)))
+
+    # channel-difference separability — which color key cleanly splits a top
+    # (usually-sky) band from the rest. Ranked by OVERLAP (not gap): a wide gap
+    # with high overlap is a trap (e.g. 2G-R-B when clouds cross over). The viewer
+    # labels the regions and picks the channel; nothing is auto-applied.
+    print('channel split (top %d%% vs rest)   expr   top   rest    gap  overlap'
+          % round(100 * top_frac))
+    for i, r in enumerate(common.channel_separability(rgb, top_frac=top_frac)):
+        print('  %6s  %5.0f  %5.0f  %5.0f   %4.1f%%   %s'
+              % (r['expr'], r['top_mean'], r['rest_mean'], r['gap'],
+                 100 * r['overlap'], '<- cleanest split' if i == 0 else ''))
+    print('  (reconcile with region RGB: a tall subject inside the top band skews '
+          'this; re-aim with --top FRAC)')
 
     # vertical luminance profile — where sky / silhouette / ground sit
     print('luminance profile (top->bottom):  y%   mean  %dark  %bright')

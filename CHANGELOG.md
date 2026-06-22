@@ -4,6 +4,33 @@ All notable changes to this plugin are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`chroma` cutout method** (`remove_bg_chroma.py`) for PARTIAL backgrounds —
+  remove a colored background (blue sky, green screen) while keeping BOTH a subject
+  and a co-equal region (the ground it stands on), the case none of `solid`/`photo`/
+  `scene` handles. Keys on an agent-chosen channel DIFFERENCE (`--channel G-B`…)
+  with a soft ramp, an agent-drawn `--keep-below` ground line (flat or curved control
+  points) for the structural prior, LOCAL fringe decontamination (`--decontam local`),
+  and connectivity gating (`--gate`/`--gate-reach`).
+- **Channel-separability probe in `analyze.py`**: ranks `G-B`/`B-R`/`R-B`/`G-R`/
+  `2G-R-B` by how cleanly each splits a top band from the rest (sorted by OVERLAP,
+  not gap, so a wide-but-noisy split like `2G-R-B` over clouds is not mistaken for a
+  clean one). New `common.channel_separability`.
+- **Halo-aware review**: `validate.py` always also writes a BLACK preview (a white
+  halo hides on the gray checker) and reports `%partial whitish` / `%img floating`
+  via new `common.assess_fringe`; advisory `CHECAR_HALO` flag; `--bg` and
+  `--keep-ground` knobs (the latter stops a deliberately-kept ground from tripping
+  `CHECAR_CANTOS`). `common.save_preview` gains a `bg` argument.
+- **Shared helpers in `common.py`**: `decontaminate_fringe` (fringe un-mixing,
+  extracted from `remove_bg_solid.py` so every keep-path can reuse it), `local_bg_field`
+  (per-pixel nearest-background color for non-uniform backgrounds), `gate_partial_to_core`
+  (connectivity gating), and `horizon_curve` (agent-supplied flat/curved ground line).
+
+### Changed
+- `remove_bg_solid.py` now calls `common.decontaminate_fringe` (behavior unchanged).
+
 ## [1.1.0] - 2026-06-22
 
 ### Added

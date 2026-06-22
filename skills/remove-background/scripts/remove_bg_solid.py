@@ -105,13 +105,10 @@ def main() -> None:
     alpha[obj] = 255.0
     alpha[band] = ramp[band] * 255.0
 
-    # fringe color decontamination (remove background-color halo)
-    out = rgb.copy()
-    a = alpha / 255.0
-    fringe = (alpha > 0) & (alpha < 255)
-    af = a[fringe][:, None]
-    F = (out[fringe] - (1.0 - af) * bg_color[None, :]) / np.clip(af, 1e-3, 1.0)
-    out[fringe] = np.clip(F, 0, 255)
+    # fringe color decontamination (remove background-color halo) — shared helper.
+    # A uniform key is correct here because the solid background is one color; a
+    # non-uniform background (e.g. blue sky + white clouds) needs common.local_bg_field.
+    out = common.decontaminate_fringe(rgb, alpha, bg_color)
 
     # remove detached islands (background residue not connected to the edges)
     alpha = common.remove_speckles(alpha.astype(np.uint8), 0.003).astype(np.float32)

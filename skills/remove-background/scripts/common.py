@@ -260,12 +260,39 @@ def checker_bg(H: int, W: int, sq: int = 16, light: int = 235, dark: int = 170) 
     return np.dstack([base, base, base])
 
 
-def save_preview(rgba_path: str, out_path: str) -> str:
-    """Composite a cutout over a checkerboard and save it for visual inspection.
+def _bg_fill(H: int, W: int, bg) -> np.ndarray:
+    """Build an ``(H, W, 3)`` preview background.
+
+    Args:
+        H: Height in pixels.
+        W: Width in pixels.
+        bg: ``'checker'`` (neutral gray checkerboard), ``'black'``, ``'white'``,
+            or an explicit ``(R, G, B)`` color.
+
+    Returns:
+        The background as an ``(H, W, 3)`` float32 array.
+    """
+    if bg == 'checker':
+        return checker_bg(H, W)
+    if bg == 'black':
+        return np.zeros((H, W, 3), np.float32)
+    if bg == 'white':
+        return np.full((H, W, 3), 255.0, np.float32)
+    return np.broadcast_to(np.asarray(bg, np.float32), (H, W, 3)).copy()
+
+
+def save_preview(rgba_path: str, out_path: str, bg='checker') -> str:
+    """Composite a cutout over a background and save it for visual inspection.
+
+    The default gray checkerboard reveals both light and dark halos, but a light
+    (e.g. white-cloud) halo can blend into the bright squares — re-preview over
+    ``bg='black'`` to catch it (and ``'white'`` for a dark halo).
 
     Args:
         rgba_path: Path to the RGBA cutout PNG.
         out_path: Path where the composited preview is written.
+        bg: Background to composite over — ``'checker'`` (default), ``'black'``,
+            ``'white'``, or an ``(R, G, B)`` color.
 
     Returns:
         ``out_path``, for convenience.
@@ -273,6 +300,203 @@ def save_preview(rgba_path: str, out_path: str) -> str:
     r = np.asarray(Image.open(rgba_path).convert('RGBA')).astype(np.float32)
     rgb, al = r[:, :, :3], r[:, :, 3:4] / 255.0
     H, W = al.shape[:2]
-    comp = rgb * al + checker_bg(H, W) * (1 - al)
+    comp = rgb * al + _bg_fill(H, W, bg) * (1 - al)
     Image.fromarray(comp.astype(np.uint8)).save(out_path)
     return out_path
+
+
+# ---------- channel-difference separability (probe for a color key) ----------
+def channel_separability(rgb: np.ndarray, top_frac: float = 0.35) -> list[dict]:
+    """Rank channel-difference discriminators by how cleanly they split a TOP band.
+
+    MEASUREMENT ONLY: the viewer labels which region is background and picks the
+    channel; nothing is auto-applied. When a single background color cannot key the
+    cut (e.g. a blue sky with WHITE clouds sitting between the sky and green
+    foliage), a channel *difference* that puts the two regions on opposite sides of
+    a threshold often can — this surfaces which one.
+
+    Args:
+        rgb: RGB image array of shape ``(H, W, 3)``.
+        top_frac: Fraction of the height treated as the top (usually-sky) band.
+
+    Returns:
+        One dict per expression (``G-B``, ``B-R``, ``R-B``, ``G-R``, ``2G-R-B``)
+        with ``expr``, ``top_mean``, ``rest_mean``, ``gap`` and ``overlap``, sorted
+        by ASCENDING overlap (gap as tiebreak). ``overlap`` is the fraction of all
+        pixels in the ambiguous zone where the two regions' ``[p10, p90]`` ranges
+        intersect — low overlap = a clean split. A big ``gap`` with high
+        ``overlap`` is a trap (e.g. ``2G-R-B`` when bright clouds cross over).
+    """
+    R, G, B = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    exprs = {'G-B': G - B, 'B-R': B - R, 'R-B': R - B,
+             'G-R': G - R, '2G-R-B': 2 * G - R - B}
+    cut = max(1, int(top_frac * rgb.shape[0]))
+    rows = []
+    for name, v in exprs.items():
+        top, rest = v[:cut].ravel(), v[cut:].ravel()
+        tlo, thi = np.percentile(top, [10, 90])
+        rlo, rhi = np.percentile(rest, [10, 90])
+        lo, hi = max(tlo, rlo), min(thi, rhi)
+        overlap = float(((v >= lo) & (v <= hi)).mean()) if hi > lo else 0.0
+        rows.append({'expr': name, 'top_mean': float(top.mean()),
+                     'rest_mean': float(rest.mean()),
+                     'gap': float(abs(top.mean() - rest.mean())), 'overlap': overlap})
+    rows.sort(key=lambda d: (d['overlap'], -d['gap']))
+    return rows
+
+
+# ---------- fringe decontamination / connectivity gating / geometry ----------
+def local_bg_field(rgb: np.ndarray, alpha: np.ndarray) -> np.ndarray:
+    """Per-pixel color of the nearest fully-transparent pixel (the LOCAL background).
+
+    Lets a fringe be decontaminated against the actual local background (e.g. a
+    white cloud at the canopy edge) instead of one global key color, which is what
+    a non-uniform background (blue sky + white clouds) requires.
+
+    Args:
+        rgb: RGB image array of shape ``(H, W, 3)``.
+        alpha: Alpha channel as an ``(H, W)`` array; ``alpha == 0`` marks background.
+
+    Returns:
+        An ``(H, W, 3)`` float32 array; each pixel holds the RGB of its nearest
+        ``alpha == 0`` neighbor. Falls back to the global mean color when the cutout
+        is all-opaque or all-transparent.
+    """
+    rgbf = np.asarray(rgb, np.float32)
+    bgmask = (np.asarray(alpha) == 0)
+    if not bgmask.any() or bgmask.all():
+        return np.broadcast_to(rgbf.reshape(-1, 3).mean(0), rgbf.shape).copy()
+    idx = ndimage.distance_transform_edt(~bgmask, return_distances=False,
+                                         return_indices=True)
+    return rgbf[tuple(idx)]
+
+
+def decontaminate_fringe(rgb: np.ndarray, alpha: np.ndarray, bg,
+                         mask: np.ndarray | None = None) -> np.ndarray:
+    """Un-mix a background color out of partial-alpha fringe pixels.
+
+    Inverts the over-compositing ``C = a*F + (1 - a)*bg`` to recover the foreground
+    color ``F``, removing the colored halo a soft edge keeps from whatever was
+    behind it. Works on the ORIGINAL pixels (no generation). Assumes each fringe
+    pixel was composited over a near-constant local ``bg`` — true for sky/cloud,
+    false for a busy textured background.
+
+    Args:
+        rgb: RGB image array of shape ``(H, W, 3)`` (coerced to float32).
+        alpha: Alpha channel as an ``(H, W)`` array (0–255).
+        bg: The contaminating color — either a single ``(3,)`` color (a uniform
+            key) or a per-pixel ``(H, W, 3)`` field (see :func:`local_bg_field` for
+            a non-uniform background).
+        mask: Optional bool ``(H, W)`` selecting which pixels to correct; defaults
+            to the partial-alpha fringe ``(0 < alpha < 255)``.
+
+    Returns:
+        A new ``(H, W, 3)`` float32 array with the fringe decontaminated.
+    """
+    out = np.asarray(rgb, np.float32).copy()
+    al = np.asarray(alpha, np.float32)
+    fr = mask if mask is not None else ((al > 0) & (al < 255))
+    if not fr.any():
+        return out
+    af = (al[fr] / 255.0)[:, None]
+    bgv = np.asarray(bg, np.float32)
+    bgf = bgv[fr] if bgv.ndim == 3 else bgv[None, :]
+    out[fr] = np.clip((out[fr] - (1.0 - af) * bgf) / np.clip(af, 1e-3, 1.0), 0, 255)
+    return out
+
+
+def gate_partial_to_core(alpha: np.ndarray, core_thresh: int = 250,
+                         reach: int = 1) -> np.ndarray:
+    """Zero partial-alpha pixels not within ``reach`` of the opaque core.
+
+    Removes DETACHED weak/partial fragments (e.g. stray sky bits) that float free
+    of the subject — the connectivity gate GPT used to clean its edge. It does NOT
+    touch fringe attached to the core.
+
+    WARNING: it will also erase legitimately detached soft parts (wispy hair,
+    smoke, thin wires). Use only when the floating-partial count is high and the
+    subject has no such parts; otherwise raise ``reach`` or skip it.
+
+    Args:
+        alpha: Alpha channel as an ``(H, W)`` array.
+        core_thresh: Alpha at/above which a pixel counts as opaque core.
+        reach: Ring distance (in px) from the core within which a partial pixel is
+            kept.
+
+    Returns:
+        A copy of ``alpha`` with unanchored partial pixels set to 0 (unchanged if
+        the core is empty).
+    """
+    al = np.asarray(alpha)
+    core = al >= core_thresh
+    if not core.any():
+        return alpha
+    near = ndimage.binary_dilation(core, iterations=max(1, int(reach)))
+    out = al.copy()
+    out[(al > 0) & (al < core_thresh) & ~near] = 0
+    return out
+
+
+def horizon_curve(H: int, W: int, spec) -> np.ndarray:
+    """Build a per-column ground line from an AGENT-SUPPLIED spec (never auto-fit).
+
+    The points/coefficients are read off the image by the viewer; this only
+    interpolates and clamps them. There is no detection of vegetation or a horizon
+    from the pixels — that would violate the skill's no-blind-detection contract.
+
+    Args:
+        H: Image height (for clamping).
+        W: Image width (number of columns to produce).
+        spec: Either a number / numeric string (a flat horizon Y) or control points
+            ``"x0:y0,x1:y1,..."`` linearly interpolated (end-clamped) across width.
+
+    Returns:
+        An int array of length ``W``: the ground line Y for each column.
+    """
+    if isinstance(spec, (int, float)):
+        return np.full(W, int(round(spec)), dtype=int)
+    s = str(spec).strip()
+    if ':' not in s:
+        return np.full(W, int(round(float(s))), dtype=int)
+    pts = sorted(tuple(float(v) for v in tok.split(':')) for tok in s.split(','))
+    xs = np.array([p[0] for p in pts])
+    ys = np.array([p[1] for p in pts])
+    hy = np.interp(np.arange(W), xs, ys)
+    return np.clip(hy.round().astype(int), 0, H)
+
+
+# ---------- fringe / halo diagnostics (measurement only) ----------
+def assess_fringe(rgba: np.ndarray) -> dict:
+    """Halo/fringe diagnostics for the REVIEW step (changes nothing).
+
+    These are the two numbers that separate a clean anti-aliased edge from a
+    colored halo — ``pct_partial`` alone cannot tell them apart.
+
+    Args:
+        rgba: RGBA image array of shape ``(H, W, 4)``.
+
+    Returns:
+        A dict with:
+
+        - ``pct_partial_whitish``: percent of PARTIAL-alpha pixels that are bright
+          and low-saturation (luma > 180 and channel spread < 25) — a leftover
+          light/white halo;
+        - ``pct_img_floating``: percent of the IMAGE that is partial-alpha not
+          touching the opaque (``>= 250``) core — stray fragments;
+        - ``n_partial``: count of partial-alpha pixels.
+    """
+    arr = np.asarray(rgba)
+    rgb = arr[..., :3].astype(np.float32)
+    al = arr[..., 3]
+    partial = (al > 10) & (al < 250)
+    n = int(partial.sum())
+    whit = 0.0
+    if n:
+        fp = rgb[partial]
+        lum = 0.299 * fp[:, 0] + 0.587 * fp[:, 1] + 0.114 * fp[:, 2]
+        spread = fp.max(1) - fp.min(1)
+        whit = 100.0 * float(((lum > 180) & (spread < 25)).mean())
+    floating = partial & ~ndimage.binary_dilation(al >= 250, iterations=1)
+    return {'pct_partial_whitish': round(whit, 1),
+            'pct_img_floating': round(100.0 * float(floating.mean()), 3),
+            'n_partial': n}
