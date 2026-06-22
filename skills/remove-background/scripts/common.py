@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 """Shared functions for the remove-background skill.
-
-Consolidates what was duplicated across run.py / analyze.py / remove_bg_*:
 edge sampling, method selection, alpha channel cleanup and assessment,
 and checkerboard preview generation. Does not import rembg (kept lightweight)."""
 import numpy as np
