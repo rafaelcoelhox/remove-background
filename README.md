@@ -1,104 +1,141 @@
 # remove-background
 
-A **Claude Code plugin** that removes the background from any image and makes it
-transparent in an RGBA PNG. It works on the **original** pixels — it does not generate,
-recreate, or redraw the image (no generative AI / inpainting).
+> A Claude Code plugin that erases the background of any image and saves it as a
+> transparent PNG — working on the **original pixels**, with no AI generation or redrawing.
 
-It works with photos, illustrations, renders, icons, products, people, animals, and
-objects, and independently chooses between two methods based on the background type:
-edge-based flood fill (uniform/solid backgrounds) or AI segmentation (complex photos).
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+`remove-background` cuts out the subject of an image and makes everything else transparent.
+It handles photos, illustrations, renders, icons, products, people, animals, and objects, and
+picks the right technique automatically:
+
+- **Edge flood fill** — for uniform / solid-color backgrounds (clean antialiasing, no halo).
+- **AI segmentation** (`rembg`) — for natural photos and complex backgrounds.
+
+It never invents pixels: resolution, colors, texture, internal shadows, and fine details are
+preserved, and the transparency lives in a real alpha channel.
+
+## Features
+
+- Works on any image type — automatically chooses the best method.
+- Real RGBA alpha output (not a drawn checkerboard).
+- Automatic model fallback + quality validation with actionable flags.
+- Checkerboard preview so you can inspect the cutout visually.
+- 100% local — your images never leave your machine.
+
+## Quick start
+
+1. **Install the plugin** inside Claude Code:
+   ```text
+   /plugin marketplace add rafaelcoelhox/remove-background
+   /plugin install remove-background@rafaelcoelhox
+   ```
+
+2. **Install the Python dependencies** (one time):
+   ```bash
+   pip3 install -r requirements.txt
+   # or: pip3 install pillow numpy scipy rembg onnxruntime
+   ```
+
+3. **Just ask** — in natural language:
+   > "remove the background from this image" · "cut this out" · "make it transparent"
+
+   Claude runs the **analyze → cut out → validate** workflow, hands back the finished PNG,
+   and opens a checkerboard preview so you can confirm the result.
 
 ## Requirements
 
-- **Python 3** with `pillow numpy scipy rembg onnxruntime`:
-  ```bash
-  pip3 install -r requirements.txt
-  # or: pip3 install pillow numpy scipy rembg onnxruntime
-  ```
-- The `rembg` models are downloaded automatically to `~/.u2net/` on first use.
-- A segmentation model is loaded into memory for photos. The default `birefnet-general-lite` is lightweight; the full `birefnet-general` model is more memory-hungry, so favor it only on machines with plenty of RAM.
+- **Python 3** with: `pillow`, `numpy`, `scipy`, `rembg`, `onnxruntime`.
+- For photos, `rembg` downloads its model to `~/.u2net/` automatically on first use.
+- **Memory:** the default `birefnet-general-lite` model is lightweight. The full
+  `birefnet-general` model gives slightly cleaner edges but needs more RAM — use it only on
+  machines with memory to spare.
 
-## Install
+## How it works
 
-This repository is also its own [plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces).
-Inside Claude Code:
+1. **Analyze** — samples the image edges to decide between a uniform background (*solid*) and
+   a complex one (*photo*).
+2. **Cut out**
+   - *Solid:* flood-fills the background from the edges (connected components + Otsu
+     threshold), adds 1–2 px antialiasing, and decontaminates the color fringe so there's no halo.
+   - *Photo:* runs `rembg` segmentation with alpha matting, then cleans the alpha channel.
+3. **Validate** — composites the result over a checkerboard and reports metrics + quality flags.
 
-```text
-/plugin marketplace add rafaelcoelhox/remove-background
-/plugin install remove-background@rafaelcoelhox
-```
+## Command-line use (optional / advanced)
 
-Then install the Python dependencies (see [Requirements](#requirements)).
-
-## How Claude uses it
-
-Just ask in natural language — the skill triggers automatically:
-
-> "remove the bg from this image" · "cut this out" · "make the background transparent"
-
-Claude follows the **analyze → cut out → validate** workflow and delivers the final PNG,
-opening a checkerboard preview to confirm the result visually.
-
-## Manual use (command line)
-
-The scripts live in `skills/remove-background/scripts/`. Inside a Claude Code skill, reference
-them with the `${CLAUDE_SKILL_DIR}` variable (it resolves to the installed skill directory on any
-machine). To run them in a plain terminal, point `$S` at that folder.
-
-**Primary approach — a single command** (chooses the method, cuts out, cleans, and validates):
+You normally never run the scripts yourself — Claude does it for you. But they also work
+standalone, which is handy for debugging or batch jobs. They live in
+`skills/remove-background/scripts/`:
 
 ```bash
-S="${CLAUDE_SKILL_DIR}/scripts"   # inside Claude Code
-# S=/path/to/remove-background/skills/remove-background/scripts   # standalone terminal
-
-python3 "$S/run.py" image.png [output.png] \
-                  [--method auto|solid|photo] [--model NAME] \
-                  [--keep-largest] [--no-fallback]
+cd skills/remove-background/scripts
+python3 run.py input.png [output.png]
 ```
-Prints the final path, the preview (in `/tmp/`), and the `STATUS` (`OK` or flags).
-If `output.png` is omitted, saves it as `<input>-sem-fundo.png`. For photos, it
-switches models automatically when the result looks poor and removes detached islands.
 
-**Quality flags** in `STATUS`: `CHECAR_CANTOS` (background at the edges),
-`CHECAR_RESIDUO` (second large detached region), `OBJETO_QUASE_VAZIO` (empty mask),
-`FUNDO_NAO_REMOVIDO` (almost everything is opaque). `OK` = automated checks passed;
-it is **not** a guarantee — a distractor *attached* to the object does not trigger a flag; inspect the preview.
+`run.py` is the single entry point: it chooses the method, cuts out, cleans, validates, and
+(for photos) falls back to another model if the result looks poor. If you omit the output path
+it saves `<input>-sem-fundo.png`. It prints three lines: the output path, the preview path
+(in `/tmp/`), and a `STATUS`.
 
-**Individual scripts** (for debugging or forcing a method/model):
+**Options:**
+
+| Option | Effect |
+|---|---|
+| `--method auto\|solid\|photo` | Force the technique (default: `auto`). |
+| `--model NAME` | Force a specific photo model. |
+| `--keep-largest` | Keep only the largest piece — discards detached distractors. |
+| `--no-fallback` | Don't try other models for photos. |
+
+**`STATUS` values** — `OK`, or one or more flags:
+
+| Flag | Meaning |
+|---|---|
+| `CHECAR_CANTOS` | Background still touches the edges. |
+| `CHECAR_RESIDUO` | A second large detached region remains (likely residue/distractor). |
+| `OBJETO_QUASE_VAZIO` | The mask is nearly empty (subject disappeared). |
+| `FUNDO_NAO_REMOVIDO` | Almost everything stayed opaque (background not removed). |
+
+> `OK` means the automated checks passed — it is **not** a guarantee. A distractor *attached*
+> to the subject won't raise a flag; always inspect the preview.
+
+<details>
+<summary>Individual scripts (deep debugging)</summary>
 
 ```bash
-python3 "$S/analyze.py" image.png                                  # background diagnostics
-python3 "$S/remove_bg_solid.py" image.png [output.png]             # uniform background/solid color
-python3 "$S/remove_bg_photo.py" image.png [output.png] [model] [--keep-largest]
-python3 "$S/validate.py" output.png                                # checkerboard preview + metrics/flags
+python3 analyze.py input.png                              # diagnose the background, recommend a method
+python3 remove_bg_solid.py input.png [output.png]         # uniform / solid-color background
+python3 remove_bg_photo.py input.png [output.png] [model] # natural photo (rembg)
+python3 validate.py output.png                            # checkerboard preview + metrics/flags
 ```
 
-## Scripts
+`common.py` holds the shared helpers (edge sampling, method selection, alpha cleanup, preview).
+</details>
 
-| Script | Function | Technique |
-|---|---|---|
-| `run.py` | **Single entry point**: chooses the method, cuts out, cleans, validates, and falls back to another model | Orchestrates the other scripts with minimal output |
-| `common.py` | Shared helpers | Edge sampling, method selection, alpha cleanup and assessment, checkerboard preview |
-| `analyze.py` | Inspects the image and recommends `solid` or `photo` | Edge uniformity + color distance |
-| `remove_bg_solid.py` | Uniform background of any color | Component flood fill from the edges + Otsu + 1–2 px antialiasing + decontamination + island removal |
-| `remove_bg_photo.py` | Natural photo / complex background | `rembg` segmentation + alpha matting (adaptive erosion) + alpha cleanup |
-| `validate.py` | Checks the result | Checkerboard composition + alpha metrics/flags |
-
-## Models (`remove_bg_photo.py` only)
+## Models (photos only)
 
 | Model | When to use |
 |---|---|
-| `birefnet-general-lite` **(default)** | Best overall; complex scenes, objects with thin/metallic parts |
-| `isnet-general-use` | Fast; portraits and simple objects |
-| `u2net_human_seg` | People only |
+| `birefnet-general-lite` **(default)** | Best overall; complex scenes, thin/metallic parts. |
+| `isnet-general-use` | Fast; portraits and simple objects. |
+| `u2net_human_seg` | People only. |
 
-The default `birefnet-general-lite` is recommended for most cases. The full `birefnet-general` model can yield slightly cleaner edges but uses considerably more RAM: on memory-constrained machines prefer the `-lite` variant, while on a machine with ample memory the full model runs fine.
+## Limitations
 
-## Guarantees and limitations
+- A **watermark baked into the pixels** (e.g. Vecteezy) is *not* removed — that would require
+  inpainting (redrawing pixels), which is out of scope.
+- A distractor **physically attached** to the subject (a figure printed on a panel behind it,
+  a reflection) becomes a single piece and isn't auto-separated — inspect the preview and use
+  `--keep-largest` or a manual touch-up.
 
-- Preserves resolution, dimensions, colors, texture, internal shadows, and fine details.
-- Transparency is stored in the **real alpha channel** (never a drawn checkerboard); all 4 corners have alpha 0.
-- A **watermark embedded in the pixels** (e.g., Vecteezy) is NOT removed by the cutout — removing it would require inpainting, which is out of scope.
+## Contributing
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup, how to
+test, and the pull-request process.
+
+## Security
+
+The plugin runs locally and processes images on your machine (no uploads, no telemetry). To
+report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## License
 
