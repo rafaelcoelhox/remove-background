@@ -16,7 +16,7 @@ edge-based flood fill (uniform/solid backgrounds) or AI segmentation (complex ph
   # or: pip3 install pillow numpy scipy rembg onnxruntime
   ```
 - The `rembg` models are downloaded automatically to `~/.u2net/` on first use.
-- ~6 GB of free RAM recommended (avoid the large `birefnet-general` model; use the `-lite` variant).
+- A segmentation model is loaded into memory for photos. The default `birefnet-general-lite` is lightweight; the full `birefnet-general` model is more memory-hungry, so favor it only on machines with plenty of RAM.
 
 ## Install
 
@@ -92,7 +92,7 @@ python3 "$S/validate.py" output.png                                # checkerboar
 | `isnet-general-use` | Fast; portraits and simple objects |
 | `u2net_human_seg` | People only |
 
-⚠️ **Do not** use `birefnet-general` (large model): it exhausts the RAM in this environment (~6 GB free). Use the `-lite` variant.
+The default `birefnet-general-lite` is recommended for most cases. The full `birefnet-general` model can yield slightly cleaner edges but uses considerably more RAM: on memory-constrained machines prefer the `-lite` variant, while on a machine with ample memory the full model runs fine.
 
 ## Guarantees and limitations
 

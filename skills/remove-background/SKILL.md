@@ -61,7 +61,8 @@ Escalate from the least to the most expensive option:
 
 1. **Switch models.** `birefnet-general-lite` (default), `isnet-general-use`
    (fast; sometimes captures *less* background, useful against distractors), `u2net_human_seg`
-   (people only — excellent for portraits). DO NOT use `birefnet-general` — it exhausts RAM.
+   (people only — excellent for portraits). The full `birefnet-general` model can give slightly
+   cleaner edges but uses much more RAM — prefer `-lite` on memory-constrained machines.
 2. **DETACHED distractor/residue** (regions separate from the object): `--keep-largest`
    keeps only the largest component. (`run.py` already removes small islands automatically.)
 3. **Distractor ATTACHED to the object** (a figure printed on the panel behind it, another

@@ -5,7 +5,7 @@ Preserve the original pixels; only calculate the alpha channel (do not generate 
 Usage: python3 remove_bg_photo.py INPUT [OUTPUT] [MODEL] [--keep-largest] [--no-clean]
   MODEL  birefnet-general-lite (default, best for complex scenes)
          | isnet-general-use (fast, portrait) | u2net_human_seg (people only)
-         DO NOT use birefnet-general (large) -> exhausts RAM.
+         birefnet-general (full) is heavier on RAM; prefer -lite unless you have ample memory.
   --keep-largest  keep only the largest connected component (discard detached distractors)
   --no-clean      do not remove small islands (dust) from the alpha channel"""
 import argparse
