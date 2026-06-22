@@ -1,20 +1,40 @@
 #!/usr/bin/env python3
-"""Remove a UNIFORM background (solid color / flattened transparency checkerboard) of
-any color while working on the original pixels. Identify the background from the
-EDGES using connected components (not by color alone), generate alpha with
-1-2 px antialiasing, and decontaminate the fringe color (without a halo).
+"""Remove a UNIFORM background (solid color or flattened transparency checkerboard).
 
-Usage: python3 remove_bg_solid.py INPUT [OUTPUT]"""
+Works on the original pixels. The background is identified from the image EDGES
+using connected components (not by color alone), so a solid-colored object is
+preserved. Alpha is generated with 1–2 px of antialiasing on the fringe, and the
+fringe color is decontaminated so no halo remains.
+
+Usage:
+    python3 remove_bg_solid.py INPUT [OUTPUT]
+"""
+from __future__ import annotations
+
 import os
 import sys
+
 import numpy as np
 from PIL import Image
 from scipy import ndimage
+
 import common
 
 
-def otsu(values, nbins=256):
-    """1D Otsu threshold for separating background (near) from object (far)."""
+def otsu(values: np.ndarray, nbins: int = 256) -> float:
+    """Compute a 1-D Otsu threshold.
+
+    Finds the value that best separates the background (near the sampled color)
+    from the object (far from it) by maximizing the between-class variance of the
+    distance histogram.
+
+    Args:
+        values: 1-D array of color distances.
+        nbins: Number of histogram bins.
+
+    Returns:
+        The threshold value, or the mean of ``values`` when the histogram is empty.
+    """
     hist, edges = np.histogram(values, bins=nbins)
     centers = (edges[:-1] + edges[1:]) / 2
     total = hist.sum()
@@ -31,57 +51,63 @@ def otsu(values, nbins=256):
     return float(centers[np.argmax(between)])
 
 
-if len(sys.argv) < 2:
-    sys.exit('usage: python3 remove_bg_solid.py INPUT [OUTPUT]')
-SRC = sys.argv[1]
-DST = sys.argv[2] if len(sys.argv) > 2 else os.path.splitext(SRC)[0] + '-sem-fundo.png'
+def main() -> None:
+    """Cut out a solid background from the image path(s) on the command line."""
+    if len(sys.argv) < 2:
+        sys.exit('usage: python3 remove_bg_solid.py INPUT [OUTPUT]')
+    src = sys.argv[1]
+    dst = sys.argv[2] if len(sys.argv) > 2 else os.path.splitext(src)[0] + '-sem-fundo.png'
 
-im = Image.open(SRC)
-print('original mode:', im.mode, '| has real alpha?', 'A' in im.getbands())
-rgb = np.asarray(im.convert('RGB')).astype(np.float32)
-H, W, _ = rgb.shape
+    im = Image.open(src)
+    print('original mode:', im.mode, '| has real alpha?', 'A' in im.getbands())
+    rgb = np.asarray(im.convert('RGB')).astype(np.float32)
+    H, W, _ = rgb.shape
 
-# background color sampled at the edges (shared helper)
-bg_color = np.median(common.border_pixels(rgb), axis=0)
-print('sampled background color:', bg_color.round(1))
+    # background color sampled at the edges (shared helper)
+    bg_color = np.median(common.border_pixels(rgb), axis=0)
+    print('sampled background color:', bg_color.round(1))
 
-# color distance from background + adaptive thresholds (Otsu)
-dist = np.sqrt(((rgb - bg_color) ** 2).sum(2))
-T = otsu(dist[dist < np.percentile(dist, 99)])  # ignore extreme outliers
-HI = max(T, 12.0)            # above this = solid object
-LO = max(T * 0.35, 8.0)      # below this = pure background
-print('thresholds: LO=%.1f HI=%.1f (Otsu=%.1f)' % (LO, HI, T))
+    # color distance from background + adaptive thresholds (Otsu)
+    dist = np.sqrt(((rgb - bg_color) ** 2).sum(2))
+    T = otsu(dist[dist < np.percentile(dist, 99)])  # ignore extreme outliers
+    HI = max(T, 12.0)            # above this = solid object
+    LO = max(T * 0.35, 8.0)      # below this = pure background
+    print('thresholds: LO=%.1f HI=%.1f (Otsu=%.1f)' % (LO, HI, T))
 
-# background connected to the edges (solid object blocks the flood fill)
-transitable = dist < HI
-lbl, _ = ndimage.label(transitable, structure=np.ones((3, 3)))
-border_labels = np.unique(np.concatenate([lbl[0], lbl[-1], lbl[:, 0], lbl[:, -1]]))
-border_labels = border_labels[border_labels != 0]
-region_bg = np.isin(lbl, border_labels)
-print('background px connected to edge: %.2f%%' % (100 * region_bg.mean()))
+    # background connected to the edges (a solid object blocks the flood fill)
+    transitable = dist < HI
+    lbl, _ = ndimage.label(transitable, structure=np.ones((3, 3)))
+    border_labels = np.unique(np.concatenate([lbl[0], lbl[-1], lbl[:, 0], lbl[:, -1]]))
+    border_labels = border_labels[border_labels != 0]
+    region_bg = np.isin(lbl, border_labels)
+    print('background px connected to edge: %.2f%%' % (100 * region_bg.mean()))
 
-# alpha: background 0, object 255, antialiasing ramp only on the adjacent fringe
-ramp = np.clip((dist - LO) / (HI - LO), 0.0, 1.0)
-obj = ~region_bg
-band = ndimage.binary_dilation(obj, iterations=2) & region_bg
-alpha = np.zeros((H, W), dtype=np.float32)
-alpha[obj] = 255.0
-alpha[band] = ramp[band] * 255.0
+    # alpha: background 0, object 255, antialiasing ramp only on the adjacent fringe
+    ramp = np.clip((dist - LO) / (HI - LO), 0.0, 1.0)
+    obj = ~region_bg
+    band = ndimage.binary_dilation(obj, iterations=2) & region_bg
+    alpha = np.zeros((H, W), dtype=np.float32)
+    alpha[obj] = 255.0
+    alpha[band] = ramp[band] * 255.0
 
-# fringe color decontamination (remove background-color halo)
-out = rgb.copy()
-a = alpha / 255.0
-fringe = (alpha > 0) & (alpha < 255)
-af = a[fringe][:, None]
-F = (out[fringe] - (1.0 - af) * bg_color[None, :]) / np.clip(af, 1e-3, 1.0)
-out[fringe] = np.clip(F, 0, 255)
+    # fringe color decontamination (remove background-color halo)
+    out = rgb.copy()
+    a = alpha / 255.0
+    fringe = (alpha > 0) & (alpha < 255)
+    af = a[fringe][:, None]
+    F = (out[fringe] - (1.0 - af) * bg_color[None, :]) / np.clip(af, 1e-3, 1.0)
+    out[fringe] = np.clip(F, 0, 255)
 
-# remove detached islands (background residue not connected to the edges)
-alpha = common.remove_speckles(alpha.astype(np.uint8), 0.003).astype(np.float32)
+    # remove detached islands (background residue not connected to the edges)
+    alpha = common.remove_speckles(alpha.astype(np.uint8), 0.003).astype(np.float32)
 
-Image.fromarray(np.dstack([out, alpha]).astype(np.uint8), 'RGBA').save(DST)
+    Image.fromarray(np.dstack([out, alpha]).astype(np.uint8), 'RGBA').save(dst)
 
-m = common.assess_alpha(np.asarray(Image.open(DST))[:, :, 3])
-print('--- saved:', DST, '| RGBA', (W, H))
-print('corners:', m['corners'], '| %opaque:', m['pct_opaque'], '| %partial:', m['pct_partial'])
-print('flags:', m['flags'] or 'none')
+    m = common.assess_alpha(np.asarray(Image.open(dst))[:, :, 3])
+    print('--- saved:', dst, '| RGBA', (W, H))
+    print('corners:', m['corners'], '| %opaque:', m['pct_opaque'], '| %partial:', m['pct_partial'])
+    print('flags:', m['flags'] or 'none')
+
+
+if __name__ == '__main__':
+    main()

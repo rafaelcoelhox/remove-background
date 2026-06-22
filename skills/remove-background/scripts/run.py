@@ -1,54 +1,91 @@
 #!/usr/bin/env python3
-"""Single background-removal entry point: choose the method, cut out, clean,
-validate, and — for photos — switch models automatically when the result looks
-poor. Minimal output (do not expose the internal method/model to the user).
+"""Single background-removal entry point.
 
-Usage: python3 run.py INPUT [OUTPUT]
-                    [--method auto|solid|photo] [--model NAME]
-                    [--keep-largest] [--no-fallback]
+Chooses the method, cuts out, cleans, validates, and — for photos — switches
+models automatically when the result looks poor. Output is intentionally minimal
+so the internal method/model is not exposed to the end user.
 
-Print 3 lines: final path | PREVIEW <path> | STATUS WxH
-STATUS = OK or one or more flags (CHECAR_CANTOS, CHECAR_RESIDUO,
-OBJETO_QUASE_VAZIO, FUNDO_NAO_REMOVIDO)."""
+Usage:
+    python3 run.py INPUT [OUTPUT]
+                   [--method auto|solid|photo] [--model NAME]
+                   [--keep-largest] [--no-fallback]
+
+Prints three lines to stdout::
+
+    <final path>
+    PREVIEW <preview path>
+    <STATUS> <WxH>
+
+where ``STATUS`` is ``OK`` or one or more flags (``CHECAR_CANTOS``,
+``CHECAR_RESIDUO``, ``OBJETO_QUASE_VAZIO``, ``FUNDO_NAO_REMOVIDO``).
+"""
+from __future__ import annotations
+
 import argparse
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+
 import numpy as np
 from PIL import Image
+
 import common
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# Model trial order for photos. u2net_human_seg is excluded (people only) — use it
-# manually when you know the subject is a person.
+#: Model trial order for photos. ``u2net_human_seg`` is excluded (people only) —
+#: pass it explicitly via ``--model`` when you know the subject is a person.
 PHOTO_MODELS = ['birefnet-general-lite', 'isnet-general-use']
 
 
-def fail(script, stderr):
+def fail(script: str, stderr: str | None) -> None:
+    """Print a failed script's stderr tail and exit with status 1.
+
+    Args:
+        script: Name of the script that failed (used as the message prefix).
+        stderr: Captured stderr text, or ``None``.
+    """
     sys.stderr.write(f'[{script}] failed:\n{(stderr or "").strip()[-800:]}\n')
     sys.exit(1)
 
 
-def run_script(name, args):
+def run_script(name: str, args: list[str]) -> subprocess.CompletedProcess:
+    """Run a sibling script in this directory with the current interpreter.
+
+    Args:
+        name: Filename of the script in this directory (e.g. ``'remove_bg_solid.py'``).
+        args: Command-line arguments to pass to it.
+
+    Returns:
+        The completed process. stdout is discarded; stderr is captured as text.
+    """
     return subprocess.run([sys.executable, os.path.join(HERE, name), *args],
                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
 
 
-def alpha_of(path):
+def alpha_of(path: str) -> np.ndarray:
+    """Return the alpha channel of an image as an ``(H, W)`` uint8 array."""
     return np.asarray(Image.open(path).convert('RGBA'))[:, :, 3]
 
 
-def main():
+def main() -> None:
+    """Parse arguments, run the chosen cutout pipeline, and print the result.
+
+    For photos without a forced ``--model``, each candidate model is tried and
+    the one with the fewest quality flags (then the most cohesive mask) is kept;
+    the search stops early as soon as a flag-free result is found.
+    """
     ap = argparse.ArgumentParser()
-    ap.add_argument('src')
-    ap.add_argument('dst', nargs='?')
-    ap.add_argument('--method', choices=['auto', 'solid', 'photo'], default='auto')
-    ap.add_argument('--model', help='force a photo model (disable fallback)')
+    ap.add_argument('src', help='input image path')
+    ap.add_argument('dst', nargs='?', help='output PNG path (default: <input>-sem-fundo.png)')
+    ap.add_argument('--method', choices=['auto', 'solid', 'photo'], default='auto',
+                    help='force the cutout technique (default: auto-detect)')
+    ap.add_argument('--model', help='force a photo model (disables the fallback search)')
     ap.add_argument('--keep-largest', action='store_true',
                     help='keep only the largest connected component (discard distractors)')
-    ap.add_argument('--no-fallback', action='store_true')
+    ap.add_argument('--no-fallback', action='store_true',
+                    help='do not try other photo models if the first looks poor')
     a = ap.parse_args()
 
     dst = a.dst or os.path.splitext(a.src)[0] + '-sem-fundo.png'

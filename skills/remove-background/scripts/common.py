@@ -1,28 +1,66 @@
 #!/usr/bin/env python3
-"""Shared functions for the remove-background skill.
-edge sampling, method selection, alpha channel cleanup and assessment,
-and checkerboard preview generation. Does not import rembg (kept lightweight)."""
+"""Shared helpers for the remove-background skill.
+
+This module centralizes the logic reused by the entry point (``run.py``) and the
+individual scripts: edge sampling, background-method selection, alpha-channel
+cleanup, cutout quality assessment, and checkerboard preview generation.
+
+It deliberately avoids importing ``rembg`` so it stays lightweight and quick to
+import for the steps that do not need AI segmentation.
+"""
+from __future__ import annotations
+
 import numpy as np
 from PIL import Image
 from scipy import ndimage
 
-BORDER_K = 6  # thickness (px) of the sampled edge band
+#: Thickness, in pixels, of the edge band sampled to characterize the background.
+BORDER_K = 6
 
 
-def load_rgb(path):
+def load_rgb(path: str) -> np.ndarray:
+    """Load an image as a float32 RGB array.
+
+    Args:
+        path: Path to the image file.
+
+    Returns:
+        The pixels as a float32 array with shape ``(H, W, 3)``.
+    """
     return np.asarray(Image.open(path).convert('RGB')).astype(np.float32)
 
 
-def border_pixels(rgb, k=BORDER_K):
-    """Pixels from all four edges, stacked as (N, 3)."""
+def border_pixels(rgb: np.ndarray, k: int = BORDER_K) -> np.ndarray:
+    """Collect the pixels from all four edges of an image.
+
+    Args:
+        rgb: RGB image array of shape ``(H, W, 3)``.
+        k: Thickness in pixels of the edge band to sample.
+
+    Returns:
+        The sampled edge pixels stacked into an ``(N, 3)`` array.
+    """
     return np.concatenate([
         rgb[:k].reshape(-1, 3), rgb[-k:].reshape(-1, 3),
         rgb[:, :k].reshape(-1, 3), rgb[:, -k:].reshape(-1, 3),
     ])
 
 
-def border_stats(rgb, k=BORDER_K):
-    """(background_color, edge_std, fraction_of_pixels_near_background)."""
+def border_stats(rgb: np.ndarray, k: int = BORDER_K) -> tuple[np.ndarray, float, float]:
+    """Summarize the background from the image edges.
+
+    Args:
+        rgb: RGB image array of shape ``(H, W, 3)``.
+        k: Thickness in pixels of the edge band to sample.
+
+    Returns:
+        A tuple ``(bg_color, edge_std, near_fraction)``:
+
+        - ``bg_color``: median edge color as a ``(3,)`` array;
+        - ``edge_std``: mean per-channel standard deviation of the edge band;
+        - ``near_fraction``: fraction of the whole image within color distance 25
+          of ``bg_color``.
+    """
     b = border_pixels(rgb, k)
     bg = np.median(b, axis=0)
     std = float(b.std(axis=0).mean())
@@ -30,16 +68,36 @@ def border_stats(rgb, k=BORDER_K):
     return bg, std, near
 
 
-def decide_method(rgb):
-    """Return 'solid' if the edges are uniform AND a relevant portion is background; otherwise 'photo'."""
+def decide_method(rgb: np.ndarray) -> str:
+    """Choose the cutout method for an image.
+
+    Args:
+        rgb: RGB image array of shape ``(H, W, 3)``.
+
+    Returns:
+        ``'solid'`` when the edges are uniform and a meaningful portion of the
+        image matches the background color; otherwise ``'photo'``.
+    """
     _, std, near = border_stats(rgb)
     return 'solid' if (std < 18 and near > 0.15) else 'photo'
 
 
 # ---------- alpha cleanup ----------
-def remove_speckles(alpha, min_frac=0.003):
-    """Zero foreground islands smaller than `min_frac` of the total foreground area.
-    Remove detached dust/residue without touching the main object."""
+def remove_speckles(alpha: np.ndarray, min_frac: float = 0.003) -> np.ndarray:
+    """Drop tiny foreground islands from an alpha channel.
+
+    Zeroes every connected foreground island smaller than ``min_frac`` of the
+    total foreground area, removing detached dust/residue without touching the
+    main subject.
+
+    Args:
+        alpha: Alpha channel as an ``(H, W)`` uint8 array.
+        min_frac: Minimum island size to keep, as a fraction of the foreground area.
+
+    Returns:
+        A copy of ``alpha`` with the small islands set to 0. If there is at most
+        one island, the input array is returned unchanged.
+    """
     fg = alpha > 10
     lbl, n = ndimage.label(fg)
     if n <= 1:
@@ -52,8 +110,18 @@ def remove_speckles(alpha, min_frac=0.003):
     return out
 
 
-def keep_largest_component(alpha):
-    """Keep only the largest connected foreground component (discard distractors)."""
+def keep_largest_component(alpha: np.ndarray) -> np.ndarray:
+    """Keep only the largest connected foreground component.
+
+    Useful to discard distractors that are detached from the main subject.
+
+    Args:
+        alpha: Alpha channel as an ``(H, W)`` uint8 array.
+
+    Returns:
+        A copy of ``alpha`` with everything except the largest component set to
+        0. If there is at most one component, the input array is returned unchanged.
+    """
     fg = alpha > 10
     lbl, n = ndimage.label(fg)
     if n <= 1:
@@ -66,8 +134,25 @@ def keep_largest_component(alpha):
 
 
 # ---------- quality assessment ----------
-def assess_alpha(alpha):
-    """Metrics + actionable cutout flags (alpha: HxW uint8 array)."""
+def assess_alpha(alpha: np.ndarray) -> dict:
+    """Compute cutout metrics and actionable quality flags from an alpha channel.
+
+    Args:
+        alpha: Alpha channel as an ``(H, W)`` uint8 array.
+
+    Returns:
+        A dict describing the cutout. The ``'flags'`` key holds a list of
+        problems detected (empty means the automated checks passed):
+
+        - ``CHECAR_CANTOS``: background still touches the image corners;
+        - ``OBJETO_QUASE_VAZIO``: the mask is nearly empty (subject lost);
+        - ``FUNDO_NAO_REMOVIDO``: almost everything stayed opaque;
+        - ``CHECAR_RESIDUO``: a second large detached region remains.
+
+        Other keys: ``WxH``, ``pct_fg``, ``pct_opaque``, ``pct_partial``,
+        ``corners``, ``corners_ok``, ``n_components_big``, ``largest_frac``,
+        ``second_over_largest``.
+    """
     H, W = alpha.shape
     tot = H * W
     fg = alpha > 10
@@ -112,15 +197,37 @@ def assess_alpha(alpha):
 
 
 # ---------- preview ----------
-def checker_bg(H, W, sq=16, light=235, dark=170):
-    """Neutral checkerboard background: reveals light AND dark halos and does not conceal green objects."""
+def checker_bg(H: int, W: int, sq: int = 16, light: int = 235, dark: int = 170) -> np.ndarray:
+    """Build a neutral gray checkerboard background.
+
+    The mid-gray tones reveal both light and dark halos around the cutout and do
+    not visually clash with green or otherwise colorful subjects.
+
+    Args:
+        H: Output height in pixels.
+        W: Output width in pixels.
+        sq: Size in pixels of each checkerboard square.
+        light: Gray value of the light squares.
+        dark: Gray value of the dark squares.
+
+    Returns:
+        An ``(H, W, 3)`` float32 array holding the checkerboard pattern.
+    """
     yy, xx = np.mgrid[0:H, 0:W]
     base = np.where(((yy // sq) + (xx // sq)) % 2 == 0, light, dark).astype(np.float32)
     return np.dstack([base, base, base])
 
 
-def save_preview(rgba_path, out_path):
-    """Composite the cutout over a checkerboard and save it for visual inspection."""
+def save_preview(rgba_path: str, out_path: str) -> str:
+    """Composite a cutout over a checkerboard and save it for visual inspection.
+
+    Args:
+        rgba_path: Path to the RGBA cutout PNG.
+        out_path: Path where the composited preview is written.
+
+    Returns:
+        ``out_path``, for convenience.
+    """
     r = np.asarray(Image.open(rgba_path).convert('RGBA')).astype(np.float32)
     rgb, al = r[:, :, :3], r[:, :, 3:4] / 255.0
     H, W = al.shape[:2]
